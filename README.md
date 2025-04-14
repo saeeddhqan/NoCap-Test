@@ -1,5 +1,6 @@
 # GPT-2 Benchmark
 
+![logo](img/logo.png)
 Hey there! Are you interested in LLMs? Do you like experimenting with neural networks, implementing different ideas and testing them out? Would you like to do that for a living? Then you're in to the right place!
 This is an official open test for (not only) people interested in joining [BottleCapAI](!www.bottlecapai.com).
 
