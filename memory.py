@@ -2,7 +2,7 @@ import math
 import torch
 nn = torch.nn
 F = nn.functional
-
+from torch import Tensor
 
 class Linear(nn.Linear):
     def forward(self, x: Tensor) -> Tensor:
