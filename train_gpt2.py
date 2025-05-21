@@ -14,6 +14,8 @@ import torch._inductor.config as config
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
+from memory import memory
+
 with open(sys.argv[0]) as f:
     code = f.read()
 
@@ -59,7 +61,7 @@ def rmsnorm(x0, eps=1e-6):
 
 class CausalSelfAttention(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, idx):
         super().__init__()
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -71,7 +73,29 @@ class CausalSelfAttention(nn.Module):
         self.c_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
         self.rotary = Rotary(self.head_dim)
 
-    def forward(self, x):
+        self.use_gating = config.use_gating
+        if config.use_gating:
+            self.cross_attn = memory(
+                self.n_embd,
+                idx=idx,
+                is_causal=True,
+                block_size=config.seqlen,
+                num_slots=config.num_slots,
+            )
+            self.gate = Linear(self.n_embd, self.n_embd, bias=False)
+            self.gate.weight.detach().zero_()
+            self.write_matter = nn.Parameter(torch.ones(self.n_embd) * 0.1)
+
+        with torch.no_grad():
+            nn.init.normal_(self.c_attn.weight, mean=0.0, std=0.02)
+            nn.init.normal_(self.c_proj.weight, mean=0.0, std=0.02)
+
+    def forward(self, x: Tensor, mem: Tensor | None) -> Tensor:
+        if self.use_gating:
+            h = self.gate(x)
+            y, mem = self.cross_attn(x, mem)
+            x = norm(x + (F.sigmoid(h) * y) * self.write_matter).to(x.dtype)
+
         B, T, C = (
             x.size()
         )  # batch size, sequence length, embedding dimensionality (n_embd)
@@ -95,30 +119,44 @@ class CausalSelfAttention(nn.Module):
         return y
 
 
+class SquishGELU(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        gelu = F.gelu(x)
+        return torch.where(x < 0, gelu, gelu ** 2)
+
+
 class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
+        self.act = SquishGELU()
+        with torch.no_grad():
+            nn.init.normal_(self.c_fc.weight, mean=0.0, std=0.02)
+            nn.init.normal_(self.c_proj.weight, mean=0.0, std=0.01)
 
     def forward(self, x):
         x = self.c_fc(x)
-        x = F.gelu(x)
+        x = self.act(x)
         x = self.c_proj(x)
         return x
 
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, idx):
         super().__init__()
-        self.attn = CausalSelfAttention(config)
+        self.attn = CausalSelfAttention(config, idx)
         self.mlp = MLP(config)
         self.attn_scale = 1 / math.sqrt(2 * config.n_layer)
 
-    def forward(self, x):
-        x = x + self.attn_scale * self.attn(rmsnorm(x))
+    def forward(self, x, mem):
+        y, mem = self.attn(rmsnorm(x), mem)
+        x = x + self.attn_scale * y
         x = x + self.mlp(rmsnorm(x))
         return x
 
@@ -133,6 +171,9 @@ class GPTConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
+    seqlen: int = -1
+    use_gating: bool = False
+    num_slots: int = 16
 
 
 class GPT(nn.Module):
@@ -144,13 +185,19 @@ class GPT(nn.Module):
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(config.vocab_size, config.n_embd),
-                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                h=nn.ModuleList([Block(config, idx) for idx in range(config.n_layer)]),
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.transformer.wte.weight = (
             self.lm_head.weight
         )  # https://paperswithcode.com/method/weight-tying
+        # print0("Number of parameters: %.3fM" % (nparams,))
+        self.apply(self.norm_weights)
+
+    def norm_weights(self, module):
+        if isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None, return_logits=True):
         b, t = idx.size()
@@ -158,9 +205,9 @@ class GPT(nn.Module):
 
         # forward the GPT model itself
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
-
+        mem = None
         for block in self.transformer.h:
-            x = block(x)
+            x, mem = block(x, mem)
         x = rmsnorm(x)
 
         if targets is not None:
@@ -445,6 +492,7 @@ if __name__ == "__main__":
         "d36": GPTConfig(vocab_size=num_vocab, n_layer=36, n_head=20, n_embd=1280),
         "d48": GPTConfig(vocab_size=num_vocab, n_layer=48, n_head=25, n_embd=1600),
     }[args.model]
+    model_config.seqlen = T
     model = GPT(model_config)
     model = model.train().cuda()
     if hasattr(config, "coordinate_descent_tuning"):
