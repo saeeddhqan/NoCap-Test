@@ -16,6 +16,16 @@ from torch.distributed import init_process_group, destroy_process_group
 
 from memory import memory
 from torch import Tensor
+from utils import Linear
+import random
+
+def set_seed(seed: int):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+set_seed(1234)
 
 with open(sys.argv[0]) as f:
     code = f.read()
@@ -77,25 +87,28 @@ class CausalSelfAttention(nn.Module):
         self.use_gating = config.use_gating
         if config.use_gating:
             self.cross_attn = memory(
-                self.n_embd,
+                dim=self.n_embd,
                 idx=idx,
                 is_causal=True,
                 block_size=config.seqlen,
                 num_slots=config.num_slots,
             )
             self.gate = Linear(self.n_embd, self.n_embd, bias=False)
-            self.gate.weight.detach().zero_()
-            self.write_matter = nn.Parameter(torch.ones(self.n_embd) * 0.1)
+            # self.gate.weight.detach().zero_()
+            self.write_matter = nn.Parameter(torch.empty(self.n_embd))
 
-        with torch.no_grad():
-            nn.init.normal_(self.c_attn.weight, mean=0.0, std=0.02)
-            nn.init.normal_(self.c_proj.weight, mean=0.0, std=0.02)
+        # with torch.no_grad():
+            # nn.init.normal_(self.c_attn.weight, mean=0.0, std=0.02)
+            # nn.init.normal_(self.c_proj.weight, mean=0.0, std=0.02)
 
     def forward(self, x: Tensor, mem: Tensor | None) -> Tensor:
         if self.use_gating:
             h = self.gate(x)
             y, mem = self.cross_attn(x, mem)
-            x = norm(x + (F.sigmoid(h) * y) * self.write_matter).to(x.dtype)
+            wmatter = 2.0 * torch.sigmoid(self.write_matter / 2.0)
+            x = rmsnorm((F.sigmoid(h) * y * wmatter)).to(x.dtype)
+            # x = 2.0 * torch.tanh(x / 2.0) # soft capping
+            # x = rmsnorm(x + (F.sigmoid(h) * y) * self.write_matter).to(x.dtype)
 
         B, T, C = (
             x.size()
@@ -117,7 +130,7 @@ class CausalSelfAttention(nn.Module):
         )  # re-assemble all head outputs side by side
         # output projection
         y = self.c_proj(y)
-        return y
+        return y, mem
 
 
 class SquishGELU(nn.Module):
@@ -125,8 +138,9 @@ class SquishGELU(nn.Module):
         super().__init__()
 
     def forward(self, x):
-        gelu = F.gelu(x)
-        return torch.where(x < 0, gelu, gelu ** 2)
+        # gelu = F.relu(x).square()
+        return F.gelu(x)
+        # return torch.where(x < 0, gelu, gelu ** 2)
 
 
 class MLP(nn.Module):
@@ -136,9 +150,9 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
         self.act = SquishGELU()
-        with torch.no_grad():
-            nn.init.normal_(self.c_fc.weight, mean=0.0, std=0.02)
-            nn.init.normal_(self.c_proj.weight, mean=0.0, std=0.01)
+        # with torch.no_grad():
+        #     nn.init.normal_(self.c_fc.weight, mean=0.0, std=0.02)
+        #     nn.init.normal_(self.c_proj.weight, mean=0.0, std=0.01)
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -154,12 +168,12 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config, idx)
         self.mlp = MLP(config)
         self.attn_scale = 1 / math.sqrt(2 * config.n_layer)
-
+        self.use_gating = config.use_gating
     def forward(self, x, mem):
-        y, mem = self.attn(rmsnorm(x), mem)
+        y, mem = self.attn(rmsnorm(x) if not self.use_gating else x, mem)
         x = x + self.attn_scale * y
         x = x + self.mlp(rmsnorm(x))
-        return x
+        return x, mem
 
 
 # -----------------------------------------------------------------------------
@@ -173,8 +187,8 @@ class GPTConfig:
     n_head: int = 12
     n_embd: int = 768
     seqlen: int = -1
-    use_gating: bool = False
-    num_slots: int = 16
+    use_gating: bool = True
+    num_slots: int = 32
 
 
 class GPT(nn.Module):
@@ -199,6 +213,8 @@ class GPT(nn.Module):
     def norm_weights(self, module):
         if isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight, gain=1 / math.sqrt(2))
 
     def forward(self, idx, targets=None, return_logits=True):
         b, t = idx.size()
@@ -210,6 +226,7 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             x, mem = block(x, mem)
         x = rmsnorm(x)
+        x = 2.0 * torch.tanh(x / 2.0) # soft capping
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
@@ -530,7 +547,7 @@ if __name__ == "__main__":
             return args.learning_rate * decay_ratio
 
     run_id = str(uuid.uuid4())
-
+    print(f"run_id: {run_id}")
     # create the logging directory if it does not exist
     logfile = None
     if master_process and args.output_dir:
@@ -547,6 +564,7 @@ if __name__ == "__main__":
 
     # begin training
     for step in range(args.num_iterations + 1):
+        print(step, ',', args.num_iterations + 1, end='\r')
         last_step = step == args.num_iterations
 
         # once in a while evaluate the validation dataset
@@ -651,4 +669,6 @@ if __name__ == "__main__":
 
     # -------------------------------------------------------------------------
     # clean up nice
+    print(f"run_id: {run_id}")
+
     destroy_process_group()

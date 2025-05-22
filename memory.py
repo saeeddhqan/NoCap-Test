@@ -2,27 +2,8 @@ import math
 import torch
 nn = torch.nn
 F = nn.functional
+from utils import Linear, norm
 from torch import Tensor
-
-class Linear(nn.Linear):
-    def forward(self, x: Tensor) -> Tensor:
-        return F.linear(
-            x,
-            self.weight.to(x.dtype),
-            None if self.bias is None else self.bias.to(x.dtype),
-        )
-
-def norm1(x):
-    return F.rms_norm(x, (x.size(-1),))
-
-def norm2(x):
-    rms = x.pow(2).mean(dim=-1, keepdim=True).sqrt() + 1e-8
-    return x / rms
-
-if hasattr(F, 'rms_norm'):
-    norm = norm1
-else:
-    norm = norm2
 
 
 class memory(nn.Module):
@@ -36,7 +17,7 @@ class memory(nn.Module):
         num_heads_qkv: int = 1,
         block_size: int = 65536,
         dropout: float = 0.1,
-        activation: str = 'sigmoid',
+        activation: str = 'softmax',
     ):
         super().__init__()
         self.idx, self.dim, self.num_slots = idx, dim, num_slots
@@ -62,12 +43,12 @@ class memory(nn.Module):
 
         # Initialize parameters
         with torch.no_grad():
-            for layer in (self.read_q, self.read_kv):
-                nn.init.normal_(layer.weight, std=0.02)
+        #     for layer in (self.read_q, self.read_kv):
+        #         nn.init.normal_(layer.weight, std=0.02)
             if idx == 0:
                 nn.init.normal_(self.memory_slots, std=0.02)
-                for layer in (self.write_q, self.write_kv, self.write_qkv, self.write_proj):
-                    nn.init.normal_(layer.weight, std=0.02)
+        #         for layer in (self.write_q, self.write_kv, self.write_qkv, self.write_proj):
+        #             nn.init.normal_(layer.weight, std=0.02)
 
         if activation == 'softmax':
             self.act = lambda x: F.softmax(x, dim=-1)
