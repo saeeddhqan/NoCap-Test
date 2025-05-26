@@ -95,7 +95,7 @@ class CausalSelfAttention(nn.Module):
             )
             self.gate = Linear(self.n_embd, self.n_embd, bias=False)
             # self.gate.weight.detach().zero_()
-            self.write_matter = nn.Parameter(torch.empty(self.n_embd))
+            self.wsum = nn.Parameter(torch.tensor([1.0, -1.0]))
 
         # with torch.no_grad():
             # nn.init.normal_(self.c_attn.weight, mean=0.0, std=0.02)
@@ -103,12 +103,9 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x: Tensor, mem: Tensor | None) -> Tensor:
         if self.use_gating:
-            h = self.gate(x)
             y, mem = self.cross_attn(x, mem)
-            wmatter = 2.0 * torch.sigmoid(self.write_matter / 2.0)
-            x = rmsnorm((F.sigmoid(h) * y * wmatter)).to(x.dtype)
-            # x = 2.0 * torch.tanh(x / 2.0) # soft capping
-            # x = rmsnorm(x + (F.sigmoid(h) * y) * self.write_matter).to(x.dtype)
+            w1, w2 = F.softmax(self.wsum, dim=0).split(1)
+            x = w1 * x + w2 * y * F.sigmoid(self.gate(x))
 
         B, T, C = (
             x.size()
@@ -170,9 +167,9 @@ class Block(nn.Module):
         self.attn_scale = 1 / math.sqrt(2 * config.n_layer)
         self.use_gating = config.use_gating
     def forward(self, x, mem):
-        y, mem = self.attn(rmsnorm(x) if not self.use_gating else x, mem)
+        y, mem = self.attn(rmsnorm(x), mem)
         x = x + self.attn_scale * y
-        x = x + self.mlp(rmsnorm(x))
+        x = x + self.attn_scale * self.mlp(rmsnorm(x))
         return x, mem
 
 
