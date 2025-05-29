@@ -159,19 +159,30 @@ class MLP(nn.Module):
 
 
 class Block(nn.Module):
-
     def __init__(self, config, idx):
         super().__init__()
         self.attn = CausalSelfAttention(config, idx)
         self.mlp = MLP(config)
         self.attn_scale = 1 / math.sqrt(2 * config.n_layer)
         self.use_gating = config.use_gating
+        self.idx = idx
+        self.n_layer = config.n_layer
+
+        # Add the soft intervention only for the middle block
+        if idx == config.n_layer // 2:
+            self.mid_transform = nn.Linear(config.n_embd, 32000, bias=False)
+        else:
+            self.mid_transform = None
+
     def forward(self, x, mem):
         y, mem = self.attn(rmsnorm(x), mem)
         x = x + self.attn_scale * y
         x = x + self.attn_scale * self.mlp(rmsnorm(x))
-        return x, mem
 
+        if self.mid_transform is not None:
+            # shape: (B, T, dim) by projecting back
+            x = self.mid_transform(x) @ self.mid_transform.weight.unsqueeze(0)
+        return x, mem
 
 # -----------------------------------------------------------------------------
 # The main GPT-2 model
@@ -184,7 +195,7 @@ class GPTConfig:
     n_head: int = 12
     n_embd: int = 768
     seqlen: int = -1
-    use_gating: bool = True
+    use_gating: bool = False
     num_slots: int = 32
 
 
