@@ -6,5 +6,5 @@ apt-get install build-essential
 python3.11 -m pip install -r requirements.txt
 wandb login
 wandb sync wandb/run-20250410_203158-64s1zc1w
-python3.11 data/cached_fineweb10B.py
+python data/cached_fineweb10B.py
 ./run.sh

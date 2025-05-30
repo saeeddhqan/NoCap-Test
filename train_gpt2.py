@@ -168,20 +168,10 @@ class Block(nn.Module):
         self.idx = idx
         self.n_layer = config.n_layer
 
-        # Add the soft intervention only for the middle block
-        if idx == config.n_layer // 2:
-            self.mid_transform = nn.Linear(config.n_embd, 32000, bias=False)
-        else:
-            self.mid_transform = None
-
     def forward(self, x, mem):
         y, mem = self.attn(rmsnorm(x), mem)
         x = x + self.attn_scale * y
         x = x + self.attn_scale * self.mlp(rmsnorm(x))
-
-        if self.mid_transform is not None:
-            # shape: (B, T, dim) by projecting back
-            x = self.mid_transform(x) @ self.mid_transform.weight.unsqueeze(0)
         return x, mem
 
 # -----------------------------------------------------------------------------
@@ -197,6 +187,7 @@ class GPTConfig:
     seqlen: int = -1
     use_gating: bool = False
     num_slots: int = 32
+    n_groups: int = 3
 
 
 class GPT(nn.Module):
@@ -217,12 +208,23 @@ class GPT(nn.Module):
         )  # https://paperswithcode.com/method/weight-tying
         # print0("Number of parameters: %.3fM" % (nparams,))
         self.apply(self.norm_weights)
+        self.layer_selection = nn.Linear(config.n_embd, config.n_groups)
+        self.layer_selection_bias = nn.Linear(config.n_embd, config.n_groups)
+        self.n_groups = config.n_groups
+        self.n_layers = config.n_layer
+        self.group_size = self.n_layers // self.n_groups
 
     def norm_weights(self, module):
         if isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
         elif isinstance(module, nn.Linear):
             nn.init.xavier_uniform_(module.weight, gain=1 / math.sqrt(2))
+
+    def apply_group(self, x, mem, group_idx):
+        blocks = self.transformer.h[group_idx * self.group_size : (group_idx + 1) * self.group_size]
+        for block in blocks:
+            x, mem = block(x, mem)
+        return x, mem
 
     def forward(self, idx, targets=None, return_logits=True):
         b, t = idx.size()
@@ -231,9 +233,12 @@ class GPT(nn.Module):
         # forward the GPT model itself
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
         mem = None
-        for block in self.transformer.h:
-            x, mem = block(x, mem)
-        x = rmsnorm(x)
+        selection = F.softmax(self.layer_selection(x) + self.layer_selection_bias(x), dim=-1)
+        y = torch.zeros_like(x)
+        for i in range(self.n_groups):
+            y = y + self.apply_group(x, mem, i)[0] * selection[:,:,i].unsqueeze(-1)
+        x = rmsnorm(y)
+        del y
         x = 2.0 * torch.tanh(x / 2.0) # soft capping
 
         if targets is not None:
