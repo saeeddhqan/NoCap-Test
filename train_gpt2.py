@@ -140,6 +140,17 @@ class SquishGELU(nn.Module):
         # return torch.where(x < 0, gelu, gelu ** 2)
 
 
+class Siamese(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.feature_extractor = nn.Linear(dim, dim, bias=False)
+
+    def forward(self, x, w):
+        f1 = self.feature_extractor(x)
+        f2 = self.feature_extractor(w).unsqueeze(0)
+        return torch.cdist(f1, f2)
+
+
 class MLP(nn.Module):
 
     def __init__(self, config):
@@ -147,14 +158,16 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
         self.act = SquishGELU()
+        self.siamese_fc = Siamese(config.n_embd)
+        self.siamese_proj = Siamese(config.n_embd)
         # with torch.no_grad():
         #     nn.init.normal_(self.c_fc.weight, mean=0.0, std=0.02)
         #     nn.init.normal_(self.c_proj.weight, mean=0.0, std=0.01)
 
     def forward(self, x):
-        x = self.c_fc(x)
-        x = self.act(x)
-        x = self.c_proj(x)
+        x = self.siamese(x, self.c_fc.weight)
+        x = F.gelu(x)
+        x = self.siamese(x, self.c_proj.weight)
         return x
 
 
@@ -171,7 +184,7 @@ class Block(nn.Module):
     def forward(self, x, mem):
         y, mem = self.attn(rmsnorm(x), mem)
         x = x + self.attn_scale * y
-        x = x + self.attn_scale * self.mlp(rmsnorm(x))
+        x = x + self.mlp(rmsnorm(x))
         return x, mem
 
 # -----------------------------------------------------------------------------
@@ -207,12 +220,12 @@ class GPT(nn.Module):
             self.lm_head.weight
         )  # https://paperswithcode.com/method/weight-tying
         # print0("Number of parameters: %.3fM" % (nparams,))
-        self.apply(self.norm_weights)
-        self.layer_selection = nn.Linear(config.n_embd, config.n_groups)
-        self.layer_selection_bias = nn.Linear(config.n_embd, config.n_groups)
-        self.n_groups = config.n_groups
-        self.n_layers = config.n_layer
-        self.group_size = self.n_layers // self.n_groups
+        # self.apply(self.norm_weights)
+        # self.layer_selection = nn.Linear(config.n_embd, config.n_groups)
+        # self.layer_selection_bias = nn.Linear(config.n_embd, config.n_groups)
+        # self.n_groups = config.n_groups
+        # self.n_layers = config.n_layer
+        # self.group_size = self.n_layers // self.n_groups
 
     def norm_weights(self, module):
         if isinstance(module, nn.Embedding):
@@ -233,12 +246,13 @@ class GPT(nn.Module):
         # forward the GPT model itself
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
         mem = None
-        selection = F.softmax(self.layer_selection(x) + self.layer_selection_bias(x), dim=-1)
-        y = torch.zeros_like(x)
-        for i in range(self.n_groups):
-            y = y + self.apply_group(x, mem, i)[0] * selection[:,:,i].unsqueeze(-1)
-        x = rmsnorm(y)
-        del y
+        # selection = F.softmax(self.layer_selection(x) + self.layer_selection_bias(x), dim=-1)
+        # y = torch.zeros_like(x)
+        # for i in range(self.n_groups):
+        #     y = y + self.apply_group(x, mem, i)[0] * selection[:,:,i].unsqueeze(-1)
+        for l in self.transformer.h:
+            x, mem = l(x, mem)
+        x = rmsnorm(x)
         x = 2.0 * torch.tanh(x / 2.0) # soft capping
 
         if targets is not None:
