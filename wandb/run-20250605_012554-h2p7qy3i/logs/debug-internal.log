@@ -1,0 +1,24 @@
+{"time":"2025-06-05T01:25:55.134357622Z","level":"INFO","msg":"stream: starting","core version":"0.20.0","symlink path":"/workspace/NoCap-Test/wandb/run-20250605_012554-h2p7qy3i/logs/debug-core.log"}
+{"time":"2025-06-05T01:25:55.413056846Z","level":"INFO","msg":"stream: created new stream","id":"h2p7qy3i"}
+{"time":"2025-06-05T01:25:55.414005506Z","level":"INFO","msg":"writer: Do: started","stream_id":"h2p7qy3i"}
+{"time":"2025-06-05T01:25:55.414567683Z","level":"INFO","msg":"sender: started","stream_id":"h2p7qy3i"}
+{"time":"2025-06-05T01:25:55.415010048Z","level":"INFO","msg":"handler: started","stream_id":"h2p7qy3i"}
+{"time":"2025-06-05T01:25:55.415350601Z","level":"INFO","msg":"stream: started","id":"h2p7qy3i"}
+{"time":"2025-06-05T01:25:55.658025446Z","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-06-05T03:12:30.991120468Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/saeedq/benchmark_gpt2/h2p7qy3i/file_stream\": dial tcp: lookup api.wandb.ai on 192.168.0.1:53: read udp 172.17.0.5:45236->192.168.0.1:53: i/o timeout"}
+{"time":"2025-06-05T03:12:40.862914945Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-06-05T03:12:53.162839397Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/saeedq/benchmark_gpt2/h2p7qy3i/file_stream\": dial tcp: lookup api.wandb.ai on 192.168.0.1:53: read udp 172.17.0.5:33539->192.168.0.1:53: i/o timeout"}
+{"time":"2025-06-05T03:13:13.260716225Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-06-05T03:13:17.636022724Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/saeedq/benchmark_gpt2/h2p7qy3i/file_stream\": dial tcp: lookup api.wandb.ai on 192.168.0.1:53: read udp 172.17.0.5:58979->192.168.0.1:53: i/o timeout"}
+{"time":"2025-06-05T03:13:46.362051469Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/saeedq/benchmark_gpt2/h2p7qy3i/file_stream\": dial tcp: lookup api.wandb.ai on 192.168.0.1:53: read udp 172.17.0.5:47122->192.168.0.1:53: i/o timeout"}
+{"time":"2025-06-05T03:13:48.084448001Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-06-05T03:14:27.909120453Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-06-05T07:43:41.08007877Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-06-05T11:05:00.885023521Z","level":"INFO","msg":"stream: closing","id":"h2p7qy3i"}
+{"time":"2025-06-05T11:05:00.885079342Z","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-06-05T11:05:00.885149502Z","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-06-05T11:05:01.411450708Z","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-06-05T11:05:01.592055065Z","level":"INFO","msg":"handler: closed","stream_id":"h2p7qy3i"}
+{"time":"2025-06-05T11:05:01.592116676Z","level":"INFO","msg":"sender: closed","stream_id":"h2p7qy3i"}
+{"time":"2025-06-05T11:05:01.592106636Z","level":"INFO","msg":"writer: Close: closed","stream_id":"h2p7qy3i"}
+{"time":"2025-06-05T11:05:01.592414349Z","level":"INFO","msg":"stream: closed","id":"h2p7qy3i"}

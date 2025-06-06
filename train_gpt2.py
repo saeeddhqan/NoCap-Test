@@ -14,18 +14,6 @@ import torch._inductor.config as config
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from memory import memory
-from torch import Tensor
-from utils import Linear
-import random
-
-def set_seed(seed: int):
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-set_seed(1234)
 
 with open(sys.argv[0]) as f:
     code = f.read()
@@ -72,7 +60,7 @@ def rmsnorm(x0, eps=1e-6):
 
 class CausalSelfAttention(nn.Module):
 
-    def __init__(self, config, idx):
+    def __init__(self, config):
         super().__init__()
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -84,29 +72,7 @@ class CausalSelfAttention(nn.Module):
         self.c_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
         self.rotary = Rotary(self.head_dim)
 
-        self.use_gating = config.use_gating
-        if config.use_gating:
-            self.cross_attn = memory(
-                dim=self.n_embd,
-                idx=idx,
-                is_causal=True,
-                block_size=config.seqlen,
-                num_slots=config.num_slots,
-            )
-            self.gate = Linear(self.n_embd, self.n_embd, bias=False)
-            # self.gate.weight.detach().zero_()
-            self.wsum = nn.Parameter(torch.tensor([1.0, -1.0]))
-
-        # with torch.no_grad():
-            # nn.init.normal_(self.c_attn.weight, mean=0.0, std=0.02)
-            # nn.init.normal_(self.c_proj.weight, mean=0.0, std=0.02)
-
-    def forward(self, x: Tensor, mem: Tensor | None) -> Tensor:
-        if self.use_gating:
-            y, mem = self.cross_attn(x, mem)
-            w1, w2 = F.softmax(self.wsum, dim=0).split(1)
-            x = w1 * x + w2 * y * F.sigmoid(self.gate(x))
-
+    def forward(self, x):
         B, T, C = (
             x.size()
         )  # batch size, sequence length, embedding dimensionality (n_embd)
@@ -127,65 +93,45 @@ class CausalSelfAttention(nn.Module):
         )  # re-assemble all head outputs side by side
         # output projection
         y = self.c_proj(y)
-        return y, mem
+        return y
 
 
-class SquishGELU(nn.Module):
-    def __init__(self):
+class CustomLayer(nn.Module):
+    def __init__(self, input_dim, output_dim, bias=False):
         super().__init__()
+        self.linear = nn.Linear(input_dim, output_dim, bias=False)
 
     def forward(self, x):
-        # gelu = F.relu(x).square()
-        return F.gelu(x)
-        # return torch.where(x < 0, gelu, gelu ** 2)
-
-
-class Siamese(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.feature_extractor = nn.Linear(dim, dim, bias=False)
-
-    def forward(self, x, w):
-        f1 = self.feature_extractor(x)
-        f2 = self.feature_extractor(w).unsqueeze(0)
-        return torch.cdist(f1, f2)
+        return F.linear(x, F.silu(self.linear.weight))
 
 
 class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
-        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
-        self.act = SquishGELU()
-        self.siamese_fc = Siamese(config.n_embd)
-        self.siamese_proj = Siamese(config.n_embd)
-        # with torch.no_grad():
-        #     nn.init.normal_(self.c_fc.weight, mean=0.0, std=0.02)
-        #     nn.init.normal_(self.c_proj.weight, mean=0.0, std=0.01)
+        self.c_fc = CustomLayer(config.n_embd, 4 * config.n_embd, bias=False)
+        self.c_proj = CustomLayer(4 * config.n_embd, config.n_embd, bias=False)
 
     def forward(self, x):
-        x = self.siamese(x, self.c_fc.weight)
-        x = F.gelu(x)
-        x = self.siamese(x, self.c_proj.weight)
+        x = self.c_fc(x)
+        x = F.gelu(x).square()
+        x = self.c_proj(x)
         return x
 
 
 class Block(nn.Module):
-    def __init__(self, config, idx):
+
+    def __init__(self, config):
         super().__init__()
-        self.attn = CausalSelfAttention(config, idx)
+        self.attn = CausalSelfAttention(config)
         self.mlp = MLP(config)
         self.attn_scale = 1 / math.sqrt(2 * config.n_layer)
-        self.use_gating = config.use_gating
-        self.idx = idx
-        self.n_layer = config.n_layer
 
-    def forward(self, x, mem):
-        y, mem = self.attn(rmsnorm(x), mem)
-        x = x + self.attn_scale * y
+    def forward(self, x):
+        x = x + self.attn_scale * self.attn(rmsnorm(x))
         x = x + self.mlp(rmsnorm(x))
-        return x, mem
+        return x
+
 
 # -----------------------------------------------------------------------------
 # The main GPT-2 model
@@ -197,10 +143,6 @@ class GPTConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
-    seqlen: int = -1
-    use_gating: bool = False
-    num_slots: int = 32
-    n_groups: int = 3
 
 
 class GPT(nn.Module):
@@ -212,48 +154,23 @@ class GPT(nn.Module):
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(config.vocab_size, config.n_embd),
-                h=nn.ModuleList([Block(config, idx) for idx in range(config.n_layer)]),
+                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.transformer.wte.weight = (
             self.lm_head.weight
         )  # https://paperswithcode.com/method/weight-tying
-        # print0("Number of parameters: %.3fM" % (nparams,))
-        # self.apply(self.norm_weights)
-        # self.layer_selection = nn.Linear(config.n_embd, config.n_groups)
-        # self.layer_selection_bias = nn.Linear(config.n_embd, config.n_groups)
-        # self.n_groups = config.n_groups
-        # self.n_layers = config.n_layer
-        # self.group_size = self.n_layers // self.n_groups
-
-    def norm_weights(self, module):
-        if isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        elif isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight, gain=1 / math.sqrt(2))
-
-    def apply_group(self, x, mem, group_idx):
-        blocks = self.transformer.h[group_idx * self.group_size : (group_idx + 1) * self.group_size]
-        for block in blocks:
-            x, mem = block(x, mem)
-        return x, mem
 
     def forward(self, idx, targets=None, return_logits=True):
         b, t = idx.size()
-        pos = torch.arange(0, t, dtype=torch.long, device=idx.device)  # shape (t)
 
         # forward the GPT model itself
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
-        mem = None
-        # selection = F.softmax(self.layer_selection(x) + self.layer_selection_bias(x), dim=-1)
-        # y = torch.zeros_like(x)
-        # for i in range(self.n_groups):
-        #     y = y + self.apply_group(x, mem, i)[0] * selection[:,:,i].unsqueeze(-1)
-        for l in self.transformer.h:
-            x, mem = l(x, mem)
+
+        for block in self.transformer.h:
+            x = block(x)
         x = rmsnorm(x)
-        x = 2.0 * torch.tanh(x / 2.0) # soft capping
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
@@ -537,15 +454,14 @@ if __name__ == "__main__":
         "d36": GPTConfig(vocab_size=num_vocab, n_layer=36, n_head=20, n_embd=1280),
         "d48": GPTConfig(vocab_size=num_vocab, n_layer=48, n_head=25, n_embd=1600),
     }[args.model]
-    model_config.seqlen = T
     model = GPT(model_config)
     model = model.train().cuda()
     if hasattr(config, "coordinate_descent_tuning"):
         config.coordinate_descent_tuning = True  # suggested by @Chillee
     print0("compiling the model...")
-    model = torch.compile(
-        model
-    )  # NOTE: this might cause issues depending on your GPU, consider turning it off
+    # model = torch.compile(
+        # model
+    # )  # NOTE: this might cause issues depending on your GPU, consider turning it off
 
     # here we wrap model into DDP container
     model = DDP(model, device_ids=[ddp_local_rank])
@@ -574,7 +490,7 @@ if __name__ == "__main__":
             return args.learning_rate * decay_ratio
 
     run_id = str(uuid.uuid4())
-    print(f"run_id: {run_id}")
+
     # create the logging directory if it does not exist
     logfile = None
     if master_process and args.output_dir:
@@ -591,7 +507,6 @@ if __name__ == "__main__":
 
     # begin training
     for step in range(args.num_iterations + 1):
-        print(step, ',', args.num_iterations + 1, end='\r')
         last_step = step == args.num_iterations
 
         # once in a while evaluate the validation dataset
@@ -696,6 +611,4 @@ if __name__ == "__main__":
 
     # -------------------------------------------------------------------------
     # clean up nice
-    print(f"run_id: {run_id}")
-
     destroy_process_group()

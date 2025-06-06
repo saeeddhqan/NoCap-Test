@@ -1,0 +1,20 @@
+{"time":"2025-06-06T08:19:21.044838496Z","level":"INFO","msg":"stream: starting","core version":"0.20.0","symlink path":"/workspace/NoCap-Test/wandb/run-20250606_081920-qfq5ambm/logs/debug-core.log"}
+{"time":"2025-06-06T08:19:21.324690804Z","level":"INFO","msg":"stream: created new stream","id":"qfq5ambm"}
+{"time":"2025-06-06T08:19:21.324753694Z","level":"INFO","msg":"stream: started","id":"qfq5ambm"}
+{"time":"2025-06-06T08:19:21.324806515Z","level":"INFO","msg":"sender: started","stream_id":"qfq5ambm"}
+{"time":"2025-06-06T08:19:21.324864576Z","level":"INFO","msg":"writer: Do: started","stream_id":"qfq5ambm"}
+{"time":"2025-06-06T08:19:21.324876156Z","level":"INFO","msg":"handler: started","stream_id":"qfq5ambm"}
+{"time":"2025-06-06T08:19:21.5051124Z","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-06-06T11:01:16.877179939Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/saeedq/benchmark_gpt2/qfq5ambm/file_stream\": dial tcp: lookup api.wandb.ai on 192.168.0.1:53: read udp 172.17.0.5:45650->192.168.0.1:53: i/o timeout"}
+{"time":"2025-06-06T11:01:29.315213283Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/saeedq/benchmark_gpt2/qfq5ambm/file_stream\": dial tcp: lookup api.wandb.ai on 192.168.0.1:53: read udp 172.17.0.5:56514->192.168.0.1:53: i/o timeout"}
+{"time":"2025-06-06T12:58:22.084901761Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/saeedq/benchmark_gpt2/qfq5ambm/file_stream\": dial tcp: lookup api.wandb.ai on 192.168.0.1:53: read udp 172.17.0.5:59616->192.168.0.1:53: i/o timeout"}
+{"time":"2025-06-06T12:58:34.332457174Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/saeedq/benchmark_gpt2/qfq5ambm/file_stream\": dial tcp: lookup api.wandb.ai on 192.168.0.1:53: read udp 172.17.0.5:37878->192.168.0.1:53: i/o timeout"}
+{"time":"2025-06-06T12:58:49.303188248Z","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/saeedq/benchmark_gpt2/qfq5ambm/file_stream\": dial tcp: lookup api.wandb.ai on 192.168.0.1:53: read udp 172.17.0.5:59494->192.168.0.1:53: i/o timeout"}
+{"time":"2025-06-06T16:14:26.288495136Z","level":"INFO","msg":"stream: closing","id":"qfq5ambm"}
+{"time":"2025-06-06T16:14:26.288563076Z","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-06-06T16:14:26.288647577Z","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-06-06T16:14:26.974269874Z","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-06-06T16:14:27.160711623Z","level":"INFO","msg":"handler: closed","stream_id":"qfq5ambm"}
+{"time":"2025-06-06T16:14:27.160743604Z","level":"INFO","msg":"writer: Close: closed","stream_id":"qfq5ambm"}
+{"time":"2025-06-06T16:14:27.160799974Z","level":"INFO","msg":"sender: closed","stream_id":"qfq5ambm"}
+{"time":"2025-06-06T16:14:27.161047937Z","level":"INFO","msg":"stream: closed","id":"qfq5ambm"}
