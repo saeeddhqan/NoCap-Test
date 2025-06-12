@@ -13,7 +13,7 @@ import torch.nn.functional as F
 import torch._inductor.config as config
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
-
+from optimizer import RMSpropMomentum
 
 with open(sys.argv[0]) as f:
     code = f.read()
@@ -192,7 +192,8 @@ class GPT(nn.Module):
         return logits, loss
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
-        optimizer = torch.optim.AdamW(
+        # optimizer = torch.optim.AdamW(
+        optimizer = RMSpropMomentum(
             self.parameters(), lr=learning_rate, weight_decay=weight_decay, betas=betas
         )
         return optimizer
