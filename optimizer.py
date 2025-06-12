@@ -14,7 +14,7 @@ class RMSpropMomentum(Optimizer):
     def __setstate__(self, state):
         super(RMSpropMomentum, self).__setstate__(state)
 
-    def step(self, epoch, closure=None):
+    def step(self, closure=None):
         loss = None
         if closure is not None:
             loss = closure()
@@ -28,43 +28,39 @@ class RMSpropMomentum(Optimizer):
                     raise RuntimeError('does not support sparse gradients')
 
                 state = self.state[p]
-
+                weight_decay = group['weight_decay']
+                lr = group['lr']
                 # State initialization
                 if len(state) == 0:
                     state['step'] = 0
                     # Exponential moving average of gradient values
-                    state['exp_avg'] = torch.zeros_like(p.data)
+                    state['m'] = torch.zeros_like(p.data)
                     # Exponential moving average of squared gradient values
-                    # state['exp_avg_sq'] = torch.zeros_like(p.data)
-                    state['exp_avg_sq'] = torch.tensor(0.0, device=p.device)
-                    # state['w_exp_avg'] = torch.zeros_like(p.data)
+                    state['v'] = torch.zeros_like(p.data)
+                    # state['v'] = torch.tensor(0.0, device=p.device)
 
-                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
-                wexp_avg = state['w_exp_avg']
+                if weight_decay != 0.0:
+                    p.data.mul_(1 - lr * weight_decay)
+
+                m, v = state['m'], state['v']
 
                 beta1, beta2 = group['betas']
 
                 state['step'] += 1
 
                 # Decay the first and second moment running average coefficient
-                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-                # wexp_avg.mul_(beta1).add_(p.data, alpha=1 - beta1)
+                m.mul_(beta1).add_(p.data, alpha=1 - beta1)
+                m_hat = m / (1 - beta1 ** state['step'])
 
-                # exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
-                # denom = exp_avg_sq.sqrt().add_(group['eps'])
+                v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                v_hat = v / (1 - beta2 ** state['step'])
+                denom = v.sqrt().add_(group['eps'])
 
-                exp_avg_sq.mul_(beta2).add_(grad.square().mean(), alpha=1 - beta2)
-                denom = exp_avg_sq.sqrt().add_(group['eps'])
+                # v.mul_(beta2).add_(grad.square().mean(), alpha=1 - beta2)
+                # v_hat = v / (1 - beta2 ** state['step'])
+                # denom = v.sqrt().add_(group['eps']) # one scalar
 
-                # if epoch < 2:print(denom.mean())
-                bias_correction1 = 1 - beta1 ** state['step']
-                bias_correction2 = 1 - beta2 ** state['step']
-                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
-
-                # p.data.addcdiv_(-step_size, exp_avg, denom)
-                p.data.add_(
-                # wexp_avg.add_(
-                    torch.mul(p.data, group['weight_decay']).addcdiv_(exp_avg, denom, value=1), alpha=-step_size)
-                # p.data = wexp_avg
+                # p.data.addcdiv_(m_hat, denom, value=-lr)
+                p.data = m_hat.addcdiv_(grad, denom, value=-lr)
 
         return loss
