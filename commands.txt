@@ -4,7 +4,7 @@ git clone https://github.com/saeeddhqan/NoCap-Test.git
 cd NoCap-Test/
 apt-get install python3.11
 apt-get install build-essential
-python3.11 -m pip install -r requirements.txt
+python -m pip install -r requirements.txt
 wandb login
 wandb sync wandb/run-20250410_203158-64s1zc1w
 python data/cached_fineweb10B.py

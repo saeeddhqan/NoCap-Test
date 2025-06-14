@@ -137,6 +137,9 @@ class AdamwPrime(Optimizer):
         if closure is not None:
             loss = closure()
 
+        rho_star   = 1e-2      # target relative update (|Δθ| / |θ|)
+        lambda_thr = 0.99      # thermostat inertia
+        eps_scale  = 1e-30     # avoids 0-division in energy calc
 
         for group in self.param_groups:
             for p in group['params']:
@@ -158,25 +161,33 @@ class AdamwPrime(Optimizer):
                     state['step'] = 0
                     state['m'] = torch.zeros_like(p.data)
                     state['v'] = torch.zeros_like(p.data)
-                    state['thr_ema'] = torch.zeros((), device=p.device)
 
                 state['step'] += 1
                 step = state['step']
                 if weight_decay != 0.0:
                     p.data.mul_(1 - lr * weight_decay)
 
-                m, v, thr_ema = state['m'], state['v'], state['thr_ema']
+                m, v = state['m'], state['v']
 
                 m.mul_(beta1).add_(grad, alpha=1 - beta1)
                 m_hat = m / (1 - beta1 ** step)
                 v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
                 v_hat = v / (1 - beta2 ** step)
-                m_hat = m_hat / (v_hat ** 0.25).add_(eps)
+                m_hat = m_hat / v_hat.sqrt().add_(eps)
+                delta_raw = -lr * m_hat 
+                # --------------------------------------------------------------------
+                energy = (delta_raw.pow(2).sum() /
+                          (p.data.pow(2).sum().clamp_min(eps_scale)))
 
-                thr_ema.mul_(ema_beta).add_(m_hat.abs().mean().detach(), alpha=1 - ema_beta)
+                # exponential moving average of the energy
+                e_avg = state['e_avg']
+                e_avg.mul_(lambda_thr).add_(energy, alpha=1 - lambda_thr)
 
-                mask = m_hat.abs() >= thr_ema
-                if mask.any():
-                    p.data[mask] -= lr * (m_hat[mask])
+                # thermostat factor τ_t  (drag if too hot, boost if too cold)
+                tau = math.sqrt((rho_star ** 2) / (e_avg.item() + eps_scale))
+
+                # apply **one** rescaling to the update
+                p.data.add_(delta_raw, alpha=tau)   # θ ← θ + τ·Δθ_raw
+
 
         return loss
