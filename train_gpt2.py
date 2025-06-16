@@ -4,6 +4,7 @@ import uuid
 import math
 import glob
 from dataclasses import dataclass
+import stu
 
 import numpy as np
 import torch
@@ -57,6 +58,71 @@ def rmsnorm(x0, eps=1e-6):
     x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
     return x.type_as(x0)
 
+K = 3
+with torch.no_grad():
+    phi = stu.get_spectral_filters(1024, K=K, device='cuda', dtype=torch.bfloat16)
+
+class RangeExpertsLinear(nn.Module):
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        range_size: int = 256,
+        max_positions: int = 4096,
+        bias: bool = True,
+        batch_first: bool = True,
+    ):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.range_size = range_size
+        self.batch_first = batch_first
+
+        self.num_experts = math.ceil(max_positions / range_size)
+        self.experts = nn.ModuleList(
+            nn.Linear(in_features, out_features, bias=bias)
+            for _ in range(self.num_experts)
+        )
+        self.reset_parameters()
+
+
+    def reset_parameters(self):
+        for lin in self.experts:
+            lin.reset_parameters()
+
+
+
+    def forward(self, x: torch.Tensor, positions: torch.LongTensor | None = None):
+
+        B, S, D = x.shape
+        assert D == self.in_features, \
+            f"last dim {D} ≠ in_features {self.in_features}"
+
+        if positions is None:
+            positions = torch.arange(S, device=x.device).expand(B, S)
+
+        if positions.shape != (B, S):
+            raise ValueError("`positions` must have shape (batch, seq_len)")
+
+        expert_ids = (positions // self.range_size).long()
+
+        x_flat  = x.reshape(-1, D)               # (B·S, D)
+        id_flat = expert_ids.reshape(-1)         # (B·S,)
+
+        out_flat = torch.empty(
+            x_flat.size(0), self.out_features,
+            dtype=x.dtype, device=x.device
+        )
+
+        for idx, expert in enumerate(self.experts):
+            mask = id_flat == idx
+            if mask.any():
+                out_flat[mask] = expert(x_flat[mask])
+
+        out = out_flat.view(B, S, self.out_features)
+
+        return out
 
 class CausalSelfAttention(nn.Module):
 
@@ -70,6 +136,7 @@ class CausalSelfAttention(nn.Module):
         self.c_attn = nn.Linear(self.n_embd, 3 * self.n_embd, bias=False)
         # output projection
         self.c_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
+        # self.c_proj = RangeExpertsLinear(self.n_embd, self.n_embd, range_size=256, max_positions=1024, bias=False)
         self.rotary = Rotary(self.head_dim)
 
     def forward(self, x):
@@ -85,15 +152,15 @@ class CausalSelfAttention(nn.Module):
         cos, sin = self.rotary(q)
         q = apply_rotary_emb(q, cos, sin)
         k = apply_rotary_emb(k, cos, sin)
-        y = F.scaled_dot_product_attention(
+        x = F.scaled_dot_product_attention(
             q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=True
         )
-        y = (
-            y.transpose(1, 2).contiguous().view(B, T, C)
+        x = (
+            x.transpose(1, 2).contiguous().view(B, T, C)
         )  # re-assemble all head outputs side by side
         # output projection
-        y = self.c_proj(y)
-        return y
+        x = self.c_proj(x)
+        return x
 
 
 class CustomLayer(nn.Module):
@@ -109,21 +176,45 @@ class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
-        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
+        self.c_fc = CustomLayer(config.n_embd, 4 * config.n_embd, bias=False)
+        self.c_proj = CustomLayer(4 * config.n_embd, config.n_embd, bias=False)
 
     def forward(self, x):
         x = self.c_fc(x)
-        x = F.gelu(x)#.square()
+        x = F.gelu(x).square()
         x = self.c_proj(x)
         return x
 
 
-class Block(nn.Module):
+# class Block(nn.Module):
 
-    def __init__(self, config):
+#     def __init__(self, config):
+#         super().__init__()
+#         self.attn = CausalSelfAttention(config)
+#         self.mlp = MLP(config)
+#         self.attn_scale = 1 / math.sqrt(2 * config.n_layer)
+
+#     def forward(self, x):
+#         x = x + self.attn_scale * self.attn(rmsnorm(x))
+#         x = x + self.mlp(rmsnorm(x))
+#         return x
+
+class Block(nn.Module):
+    def __init__(self, config, idx, method: str = 'stu'):
         super().__init__()
-        self.attn = CausalSelfAttention(config)
+        self.method = method
+        if idx % 2 == 0 or idx > 6:
+            self.attn = CausalSelfAttention(config)
+        else:
+            self.attn = stu.STU(
+                n_embd=config.n_embd,
+                torch_dtype=torch.bfloat16,
+                is_causal=True,
+                n=1024,
+                phi=phi,
+                idx=idx,
+                K=K,
+            ).to(device)
         self.mlp = MLP(config)
         self.attn_scale = 1 / math.sqrt(2 * config.n_layer)
 
@@ -131,7 +222,6 @@ class Block(nn.Module):
         x = x + self.attn_scale * self.attn(rmsnorm(x))
         x = x + self.mlp(rmsnorm(x))
         return x
-
 
 # -----------------------------------------------------------------------------
 # The main GPT-2 model
@@ -143,6 +233,7 @@ class GPTConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
+    use_dsystem: bool = True
 
 
 class GPT(nn.Module):
@@ -150,11 +241,10 @@ class GPT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(config.vocab_size, config.n_embd),
-                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                h=nn.ModuleList([Block(config, idx=idx, method = 'stu' if config.use_dsystem else 'attn') for idx in range(config.n_layer)]),
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -167,33 +257,32 @@ class GPT(nn.Module):
 
         # forward the GPT model itself
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
-
         for block in self.transformer.h:
             x = block(x)
         x = rmsnorm(x)
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
+            x = self.lm_head(x)
             loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
+                x.view(-1, x.size(-1)), targets.view(-1), ignore_index=-1
             )
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(
+            x = self.lm_head(
                 x[:, [-1], :]
             )  # note: using list [-1] to preserve the time dim
             loss = None
 
         # there are performance reasons why not returning logits is prudent, if not needed
         if not return_logits:
-            logits = None
+            x = None
 
-        return logits, loss
+        return x, loss
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
-        # optimizer = torch.optim.AdamW(
-        optimizer = RMSpropMomentum(
+        optimizer = torch.optim.AdamW(
+        # optimizer = RMSpropMomentum(
             self.parameters(), lr=learning_rate, weight_decay=weight_decay, betas=betas
         )
         return optimizer
@@ -298,6 +387,34 @@ def print0(*args, **kwargs):
     # if this is not a distributed run, it's just a print
     if int(os.environ.get("RANK", 0)) == 0:
         print(*args, **kwargs)
+
+
+def check_causality(model, seq_len=8, vocab_size=1024, device='cuda'):
+    """
+    Checks if model is causal
+    """
+    model.eval()
+    with torch.no_grad():
+        x = torch.randint(0, vocab_size, (1, seq_len), device=device)
+
+        logits_orig, _ = model(x, targets=x)
+        logits_orig = logits_orig[0]
+
+
+        for pos in range(seq_len - 1):
+            x_perturbed = x.clone()
+            x_perturbed[0, pos + 1] = (x[0, pos + 1] + 1) % vocab_size
+            logits_perturbed, _ = model(x_perturbed, targets=x)
+            logits_perturbed = logits_perturbed[0]
+
+            # Compare logits at current position
+            delta = (logits_orig[pos] - logits_perturbed[pos]).abs().max()
+            if delta > 1e-4:
+                print(f"Causality violated at position {pos} (delta={delta.item():.5f})")
+                return False
+
+    print("Model passed causality check.")
+    return True
 
 
 if __name__ == "__main__":
@@ -463,7 +580,8 @@ if __name__ == "__main__":
     # model = torch.compile(
         # model
     # )  # NOTE: this might cause issues depending on your GPU, consider turning it off
-
+    # check causality
+    check_causality(model, seq_len=T, vocab_size=num_vocab, device=device)
     # here we wrap model into DDP container
     model = DDP(model, device_ids=[ddp_local_rank])
     raw_model = model.module  # always contains the "raw" unwrapped model
