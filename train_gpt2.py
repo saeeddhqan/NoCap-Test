@@ -58,9 +58,6 @@ def rmsnorm(x0, eps=1e-6):
     x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
     return x.type_as(x0)
 
-K = 3
-with torch.no_grad():
-    phi = stu.get_spectral_filters(1024, K=K, device='cuda', dtype=torch.bfloat16)
 
 class RangeExpertsLinear(nn.Module):
 
@@ -186,41 +183,20 @@ class MLP(nn.Module):
         return x
 
 
-# class Block(nn.Module):
-
-#     def __init__(self, config):
-#         super().__init__()
-#         self.attn = CausalSelfAttention(config)
-#         self.mlp = MLP(config)
-#         self.attn_scale = 1 / math.sqrt(2 * config.n_layer)
-
-#     def forward(self, x):
-#         x = x + self.attn_scale * self.attn(rmsnorm(x))
-#         x = x + self.mlp(rmsnorm(x))
-#         return x
-
 class Block(nn.Module):
     def __init__(self, config, idx, method: str = 'stu'):
         super().__init__()
         self.method = method
-        if idx % 2 == 0 or idx > 6:
-            self.attn = CausalSelfAttention(config)
-        else:
-            self.attn = stu.STU(
-                n_embd=config.n_embd,
-                torch_dtype=torch.bfloat16,
-                is_causal=True,
-                n=1024,
-                phi=phi,
-                idx=idx,
-                K=K,
-            ).to(device)
+        self.attn = CausalSelfAttention(config)
         self.mlp = MLP(config)
+        self.moe = stu.SpectralMoEHeads(config.n_embd, config.n_embd, 1024)
+        self.need = nn.Parameters(torch.empty(config.n_embd))
         self.attn_scale = 1 / math.sqrt(2 * config.n_layer)
 
     def forward(self, x):
         x = x + self.attn_scale * self.attn(rmsnorm(x))
         x = x + self.mlp(rmsnorm(x))
+        x = (1 - self.need) * x + self.need * self.moe(rmsnorm(x))
         return x
 
 # -----------------------------------------------------------------------------
@@ -233,7 +209,8 @@ class GPTConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
-    use_dsystem: bool = True
+    n_expt: int = 4
+
 
 
 class GPT(nn.Module):
