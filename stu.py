@@ -26,7 +26,7 @@ class SpectralMoEHeads(nn.Module):
     def __init__(self, in_features: int, out_features: int,
                  num_experts: int, num_heads: int,
                  max_seq_len: int,
-                 dtype=torch.bfloat16,
+                 dtype=torch.float32,
                  device=None):
         super().__init__()
         assert in_features % num_heads == 0, "in_features must divide num_heads"
@@ -40,7 +40,7 @@ class SpectralMoEHeads(nn.Module):
         self.weight = nn.Parameter(
             torch.empty(num_heads, num_experts, d_h, d_o, device=device)
         )
-        self.register_buffer("phi", get_phi(L, K, device, dtype), persistent=False)
+        self.register_buffer("phi", get_phi(max_seq_len, num_experts, device, dtype), persistent=False)
 
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
@@ -52,7 +52,7 @@ class SpectralMoEHeads(nn.Module):
         self.in_features  = in_features
         self.out_features = out_features
 
-    def forward(self, x: Tensor, phi: Tensor) -> Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         """
         x: (B, T, H*d_h)  –> y: (B, T, H*d_o)
         """

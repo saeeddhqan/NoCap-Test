@@ -189,8 +189,14 @@ class Block(nn.Module):
         self.method = method
         self.attn = CausalSelfAttention(config)
         self.mlp = MLP(config)
-        self.moe = stu.SpectralMoEHeads(config.n_embd, config.n_embd, 1024)
-        self.need = nn.Parameters(torch.empty(config.n_embd))
+        self.moe = stu.SpectralMoEHeads(
+            config.n_embd, config.n_embd,
+            num_experts=config.n_expt,
+            num_heads=config.n_head,
+            max_seq_len=1024,
+            device='cuda'
+        )
+        self.need = nn.Parameter(torch.empty(config.n_embd))
         self.attn_scale = 1 / math.sqrt(2 * config.n_layer)
 
     def forward(self, x):
@@ -221,7 +227,7 @@ class GPT(nn.Module):
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(config.vocab_size, config.n_embd),
-                h=nn.ModuleList([Block(config, idx=idx, method = 'stu' if config.use_dsystem else 'attn') for idx in range(config.n_layer)]),
+                h=nn.ModuleList([Block(config, idx=idx, method='attn') for idx in range(config.n_layer)]),
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
