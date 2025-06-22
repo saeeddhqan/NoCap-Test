@@ -4,7 +4,7 @@ import uuid
 import math
 import glob
 from dataclasses import dataclass
-import stu
+import spectral_moe
 
 import numpy as np
 import torch
@@ -59,68 +59,6 @@ def rmsnorm(x0, eps=1e-6):
     return x.type_as(x0)
 
 
-class RangeExpertsLinear(nn.Module):
-
-    def __init__(
-        self,
-        in_features: int,
-        out_features: int,
-        range_size: int = 256,
-        max_positions: int = 4096,
-        bias: bool = True,
-        batch_first: bool = True,
-    ):
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.range_size = range_size
-        self.batch_first = batch_first
-
-        self.num_experts = math.ceil(max_positions / range_size)
-        self.experts = nn.ModuleList(
-            nn.Linear(in_features, out_features, bias=bias)
-            for _ in range(self.num_experts)
-        )
-        self.reset_parameters()
-
-
-    def reset_parameters(self):
-        for lin in self.experts:
-            lin.reset_parameters()
-
-
-
-    def forward(self, x: torch.Tensor, positions: torch.LongTensor | None = None):
-
-        B, S, D = x.shape
-        assert D == self.in_features, \
-            f"last dim {D} ≠ in_features {self.in_features}"
-
-        if positions is None:
-            positions = torch.arange(S, device=x.device).expand(B, S)
-
-        if positions.shape != (B, S):
-            raise ValueError("`positions` must have shape (batch, seq_len)")
-
-        expert_ids = (positions // self.range_size).long()
-
-        x_flat  = x.reshape(-1, D)               # (B·S, D)
-        id_flat = expert_ids.reshape(-1)         # (B·S,)
-
-        out_flat = torch.empty(
-            x_flat.size(0), self.out_features,
-            dtype=x.dtype, device=x.device
-        )
-
-        for idx, expert in enumerate(self.experts):
-            mask = id_flat == idx
-            if mask.any():
-                out_flat[mask] = expert(x_flat[mask])
-
-        out = out_flat.view(B, S, self.out_features)
-
-        return out
-
 class CausalSelfAttention(nn.Module):
 
     def __init__(self, config):
@@ -129,11 +67,9 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.head_dim = self.n_embd // self.n_head
         assert self.n_embd % self.n_head == 0
-        # key, query, value projections for all heads, but in a batch
+
         self.c_attn = nn.Linear(self.n_embd, 3 * self.n_embd, bias=False)
-        # output projection
         self.c_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
-        # self.c_proj = RangeExpertsLinear(self.n_embd, self.n_embd, range_size=256, max_positions=1024, bias=False)
         self.rotary = Rotary(self.head_dim)
 
     def forward(self, x):
@@ -184,12 +120,11 @@ class MLP(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, config, idx, method: str = 'stu'):
+    def __init__(self, config, idx):
         super().__init__()
-        self.method = method
         self.attn = CausalSelfAttention(config)
         self.mlp = MLP(config)
-        self.moe = stu.SpectralMoEHeads(
+        self.moe = spectral_moe.SpectralMoEHeads(
             config.n_embd, config.n_embd,
             num_experts=config.n_expt,
             num_heads=config.n_head,
@@ -227,7 +162,7 @@ class GPT(nn.Module):
         self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(config.vocab_size, config.n_embd),
-                h=nn.ModuleList([Block(config, idx=idx, method='attn') for idx in range(config.n_layer)]),
+                h=nn.ModuleList([Block(config, idx=idx) for idx in range(config.n_layer)]),
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -626,8 +561,10 @@ if __name__ == "__main__":
                     val_loss += loss
                 dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
                 val_loss /= val_steps
+                needs = [round(n.need.mean().item(), 3) for n in raw_model.transformer.h if hasattr(n, "need")]
             # log to console and to file
             print0(f"step:{step}/{args.num_iterations} | val loss {val_loss:.6f}")
+            print0(f"step:{step}/{args.num_iterations} | {needs}")
             if master_process:
                 if args.log_wandb:
                     wandb.log({"val_loss": val_loss}, step=step * tokens_per_iter)
